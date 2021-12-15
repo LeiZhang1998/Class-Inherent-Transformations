@@ -1,10 +1,7 @@
 import argparse
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.optim import lr_scheduler
 import numpy as np
-import torchvision
 from torchvision import models, transforms
 import os
 from sklearn import metrics

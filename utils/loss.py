@@ -25,7 +25,6 @@ class GeneratorLoss(nn.Module):
 
         return image_loss + 0.006 * perception_loss + 2e-8 * tv_loss + lambda_class*class_det_loss
 
-
 class TVLoss(nn.Module):
     def __init__(self, tv_loss_weight=1):
         super(TVLoss, self).__init__()
@@ -44,3 +43,10 @@ class TVLoss(nn.Module):
     @staticmethod
     def tensor_size(t):
         return t.size()[1] * t.size()[2] * t.size()[3]
+
+
+if __name__ == '__main__':
+    l = TVLoss()
+    x = torch.randn([1, 3, 64, 64])
+    y = l(x)
+    y.backward()

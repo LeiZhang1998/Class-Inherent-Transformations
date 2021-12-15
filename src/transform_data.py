@@ -1,10 +1,8 @@
 import argparse
-import os
 
 import torch.utils.data
-from torchvision import datasets, models, transforms
+from torchvision import transforms
 from data_utils import *
-from torch.utils.data import DataLoader
 import shutil
 from model import Generator
 from PIL import Image

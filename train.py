@@ -11,37 +11,19 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torchvision import models, transforms
 import numpy as np
-from data_utils import *
-from loss import GeneratorLoss
-from model import Generator
 from sklearn import metrics
 from sklearn.model_selection import StratifiedKFold
 from torch.utils.data.sampler import SubsetRandomSampler
-from pytorchtools import EarlyStopping
+from pathlib import Path
+import yaml
 
+from utils.general import increment_path
+from data_utils import *
+from utils.loss import GeneratorLoss
+from models.model import Generator
 
-parser = argparse.ArgumentParser(description='Train Super Resolution Models')
-parser.add_argument('--data_size', default=64, type=int, help='imgs resized to (data_size,data_size)')
-parser.add_argument('--batch_size', default=32, type=int, help='train batch_size number')
-parser.add_argument('--num_epochs', default=50, type=int, help='train epoch number')
-parser.add_argument('--lambda_class', default=1, type=float)
-parser.add_argument('--all_lambdas', default=False, action='store_true')
-parser.add_argument('--classifier_name', default="resnet18", type=str)
-parser.add_argument('--dataset', type=str, default="cat_vs_dog")
-
-opt = parser.parse_args()
-
-NUM_EPOCHS = opt.num_epochs
-BATCH_SIZE = opt.batch_size
-LAMBDA_CLASS = opt.lambda_class
-CLASSIFIER_NAME = opt.classifier_name.lower()
-DATASET = opt.dataset.lower()
-DATA_SIZE = opt.data_size
-
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(torch.cuda.current_device())
-print(torch.cuda.get_device_name(0))
+from utils.pytorchtools import EarlyStopping
+from utils.data_loader import ClsDataLoader
 
 
 def validate(G_dict, classifier, val_loader, criterion_classifier, class_names):
@@ -91,33 +73,40 @@ def validate(G_dict, classifier, val_loader, criterion_classifier, class_names):
     return val_loss, y_true, y_pred, val_results
 
 
-def train(train_set):
-    class_names = train_set.classes
-    print(train_set.classes)
+def train(opt, device):
+    save_dir = Path(opt.save_dir)
+    # Directories
+    w = save_dir / 'weights'  # weights dir
+    w.mkdir(parents=True, exist_ok=True)  # make dir
+    last, best = w / 'last.pt', w / 'best.pt'
+
+    # Save run settings
+    with open(save_dir / 'opt.yaml', 'w') as f:
+        yaml.safe_dump(dict(vars(opt)), f, sort_keys=False)
+
+    # datasets
+    with open(opt.data) as f:
+        data_dict = yaml.safe_load(f)  # data dict
+    transforms_train = transforms.Compose([
+        transforms.Resize((opt.imgsz, opt.imgsz)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+    train_set = ClsDataLoader(data_dict['train'], transform = transforms_train)
+    class_names = data_dict['name']
 
     # Choose classifier indicated by opt.classifier_name
     switcher = {
         'resnet50': models.resnet50,
         'resnet18': models.resnet18
     }
-    # Get the function from switcher dictionary
-    func = switcher[CLASSIFIER_NAME]
 
-    # In case classes are unbalanced, balance them with different weights
-    unique, counts = np.unique(np.asarray(train_set.targets), return_counts=True)
-    class_weights = np.max(counts)/counts
-    class_weights /= np.max(class_weights)
-
-    criterion_classifier = nn.CrossEntropyLoss(weight=torch.from_numpy(class_weights).float().to(device))
-    print("weights = {}".format(class_weights))
-
-    print(CLASSIFIER_NAME)
-    print("Data size %d" % DATA_SIZE)
+    criterion_classifier = nn.CrossEntropyLoss()
 
     if opt.all_lambdas:
         lambda_values = [1, 0.5, 0.1, 0.075, 0.05, 0.025, 0.01, 0.0075, 0.005, 0.0025, 0.001, 0.00075, 5e-4]
     else:
-        lambda_values = [LAMBDA_CLASS]
+        lambda_values = [1]
 
     for lambda_class in lambda_values:
         if lambda_class >= 1.0:
@@ -139,9 +128,9 @@ def train(train_set):
 
             for class_name in class_names:
                 netG = Generator()
-                G_dict[class_name] = netG.cuda()
+                G_dict[class_name] = netG.to(device)
                 generator_criterion = GeneratorLoss()
-                G_criterion_dict[class_name] = generator_criterion.cuda()
+                G_criterion_dict[class_name] = generator_criterion.to(device)
                 optimizers_dict[class_name] = optim.Adam(G_dict[class_name].parameters(),
                                                          lr=0.0001, weight_decay=1e-4)
 
@@ -161,7 +150,7 @@ def train(train_set):
             num_ftrs = classifier.fc.in_features
             classifier.fc = nn.Linear(num_ftrs, len(class_names))
             classifier.name = CLASSIFIER_NAME
-            classifier.cuda()
+            classifier.to(device)
 
             print("FOLD {}".format(fold_idx))
             train_sampler = SubsetRandomSampler(train_index)
@@ -322,12 +311,30 @@ def train(train_set):
                                   str(lambda_class) + '_' + str(DATA_SIZE) + '_train_results.csv', index_label='Epoch')
 
 
-if __name__ == "__main__":
+def parse_opt(known=False):
+    parser = argparse.ArgumentParser(description='Train Super Resolution Models')
+    parser.add_argument('--datasets', default='data/covid_ceshi.yaml', help='dataset.yaml path')
+    parser.add_argument('--imgsz', default=64, type=int, help='imgs resized to (data_size,data_size)')
+    parser.add_argument('--batch', default=4, type=int, help='train batch_size number')
+    parser.add_argument('--epochs', default=50, type=int, help='train epoch number')
+    parser.add_argument('--lambda_class', default=1, type=float)
+    parser.add_argument('--all_lambdas', default=False, action='store_true')
+    parser.add_argument('--classifier_name', default="resnet18", type=str)
+    parser.add_argument('--project', default='runs/train', help='save to project/name')
 
-    data_dir = os.path.join("data", DATASET, 'train')
-    print(data_dir)
-    train_set = ImageFolderWithPaths_noUps(data_dir, DATA_SIZE,
-                                           img_transforms=transforms.Compose([transforms.RandomHorizontalFlip(),
-                                                                              transforms.RandomAffine(5),
-                                                                              transforms.RandomRotation(5)]))
-    train(train_set)
+    opt = parser.parse_args()
+    return opt
+
+
+def main(opt):
+    opt.save_dir = str(increment_path(Path(opt.project) / opt.model))
+    device = torch.device('cuda:0' if opt.device!='cpu' else 'cpu')
+    # Train
+    train(opt, device)
+
+
+if __name__ == "__main__":
+    opt = parse_opt()
+    main(opt)
+
+
